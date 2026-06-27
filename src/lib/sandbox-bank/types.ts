@@ -1,3 +1,10 @@
+import type {
+  AgentRole,
+  FinanceGateResult,
+  JudgeResult,
+  ToolCallTrace,
+} from "@/lib/finance-ai/schemas"
+
 export type Currency = "USD" | "EUR" | "TRY" | "BTC" | "ETH"
 
 export type Account = {
@@ -144,4 +151,12 @@ export type BankAgentResult = {
   transcript: { role: "user" | "assistant"; text: string; at: string }[]
   events: AgentEvent[]
   state: BankState
+  orchestration?: {
+    traceId: string
+    gate: FinanceGateResult
+    selectedAgents: AgentRole[]
+    judge: JudgeResult
+    requiresHumanApproval: boolean
+    toolCalls: ToolCallTrace[]
+  }
 }

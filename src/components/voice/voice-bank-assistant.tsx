@@ -33,6 +33,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { formatMoney } from "@/lib/sandbox-bank/format"
 import type { BankAgentResult, BankState, PendingConfirmation } from "@/lib/sandbox-bank/types"
+import { speakTurkish } from "@/lib/voice/browser-speech"
 
 type SpeechRecognitionLike = {
   lang: string
@@ -63,15 +64,6 @@ const EXAMPLE_COMMANDS = [
 
 function dispatchStateChanged() {
   window.dispatchEvent(new CustomEvent("voice-bank-state-changed"))
-}
-
-function speak(text: string) {
-  if (!("speechSynthesis" in window)) return
-  window.speechSynthesis.cancel()
-  const utterance = new SpeechSynthesisUtterance(text)
-  utterance.lang = "tr-TR"
-  utterance.rate = 0.98
-  window.speechSynthesis.speak(utterance)
 }
 
 function RealtimePanel() {
@@ -176,7 +168,7 @@ function ConfirmationBox({
 
 export function VoiceBankAssistant() {
   const [open, setOpen] = useState(false)
-  const [input, setInput] = useState("Oğluma 100 dolar yolla")
+  const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
   const [listening, setListening] = useState(false)
   const [state, setState] = useState<BankState | null>(null)
@@ -209,7 +201,7 @@ export function VoiceBankAssistant() {
     setState(result.state)
     setMessages((current) => [...current, ...result.transcript].slice(-8))
     dispatchStateChanged()
-    speak(result.message)
+    void speakTurkish(result.message)
   }
 
   const sendCommand = async (text = input) => {
@@ -258,7 +250,6 @@ export function VoiceBankAssistant() {
     recognition.onresult = (event) => {
       const transcript = event.results[0]?.[0]?.transcript ?? ""
       setInput(transcript)
-      if (transcript) sendCommand(transcript)
     }
     recognition.onend = () => setListening(false)
     recognition.onerror = () => setListening(false)
@@ -319,7 +310,7 @@ export function VoiceBankAssistant() {
 
             <div className="grid grid-cols-2 gap-2">
               {EXAMPLE_COMMANDS.map((command) => (
-                <Button key={command} variant="outline" size="sm" className="h-auto justify-start text-wrap py-2 text-left" onClick={() => sendCommand(command)}>
+                <Button key={command} variant="outline" size="sm" className="h-auto justify-start text-wrap py-2 text-left" onClick={() => setInput(command)}>
                   <SparklesIcon className="size-3.5" />
                   {command}
                 </Button>

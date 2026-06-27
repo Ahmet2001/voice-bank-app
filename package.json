@@ -14,6 +14,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@pipecat-ai/client-js": "^1.12.0",
     "@pipecat-ai/client-react": "^1.7.1",
+    "@pipecat-ai/daily-transport": "^1.6.7",
     "@pipecat-ai/small-webrtc-transport": "^1.10.5",
     "@pipecat-ai/voice-ui-kit": "^0.11.0",
     "@pipecat-ai/websocket-transport": "^1.7.0",

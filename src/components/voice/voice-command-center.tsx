@@ -11,6 +11,9 @@ import {
   SendIcon,
   ShieldCheckIcon,
   SparklesIcon,
+  SquareIcon,
+  Volume2Icon,
+  VolumeXIcon,
   XIcon,
 } from "lucide-react"
 import {
@@ -31,6 +34,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { formatMoney } from "@/lib/sandbox-bank/format"
 import type { AgentEvent, BankAgentResult, BankState, PendingConfirmation } from "@/lib/sandbox-bank/types"
+import { speakTurkish, stopTurkishSpeech } from "@/lib/voice/browser-speech"
 
 type SpeechRecognitionLike = {
   lang: string
@@ -70,6 +74,14 @@ type OperationStep = {
 
 type DirectActionTab = "voice" | "text"
 
+type TranscriptionResponse = {
+  text?: string
+  language?: string
+  duration?: number
+  model?: string
+  error?: string
+}
+
 const EXAMPLES = [
   "Oğluma 100 dolar yolla",
   "Bakiyelerimi göster",
@@ -79,15 +91,6 @@ const EXAMPLES = [
 
 function dispatchStateChanged() {
   window.dispatchEvent(new CustomEvent("voice-bank-state-changed"))
-}
-
-function speak(text: string) {
-  if (!("speechSynthesis" in window)) return
-  window.speechSynthesis.cancel()
-  const utterance = new SpeechSynthesisUtterance(text)
-  utterance.lang = "tr-TR"
-  utterance.rate = 0.98
-  window.speechSynthesis.speak(utterance)
 }
 
 function eventToStep(event: AgentEvent, index: number): OperationStep {
@@ -297,15 +300,24 @@ function SwipeConfirmationCard({
 }
 
 export function VoiceCommandCenter() {
-  const [input, setInput] = useState("Oğluma 100 dolar yolla")
+  const [input, setInput] = useState("")
   const [activeTab, setActiveTab] = useState<DirectActionTab>("voice")
   const [busy, setBusy] = useState(false)
   const [listening, setListening] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const [ttsEnabled, setTtsEnabled] = useState(true)
   const [status, setStatus] = useState<AgentStatus | null>(null)
   const [state, setState] = useState<BankState | null>(null)
   const [lastAssistantMessage, setLastAssistantMessage] = useState(
     "Merhaba, Türkçe komut verebilirsiniz. İşlemler onay alınmadan uygulanmaz."
   )
+  const [messages, setMessages] = useState<BankAgentResult["transcript"]>([
+    {
+      role: "assistant",
+      text: "Merhaba. Komutu yazabilir veya mikrofona basıp yerel Whisper ile metne çevirebilirsiniz.",
+      at: new Date().toISOString(),
+    },
+  ])
   const [steps, setSteps] = useState<OperationStep[]>([
     {
       id: "ready",
@@ -315,6 +327,9 @@ export function VoiceCommandCenter() {
     },
   ])
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const mediaStreamRef = useRef<MediaStream | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
 
   const speechAvailable = useMemo(() => {
     if (typeof window === "undefined") return false
@@ -346,17 +361,19 @@ export function VoiceCommandCenter() {
   const applyResult = (result: BankAgentResult) => {
     setState(result.state)
     setLastAssistantMessage(result.message)
+    setMessages((current) => [...current, ...result.transcript].slice(-10))
     setSteps([
       { id: "received", label: "Komut alındı", detail: result.transcript[0]?.text, status: "success" },
       { id: "hermes", label: "Hermes banking toolset", detail: status?.commandLabel ?? "Yerel sandbox agent", status: "success" },
       ...result.events.map(eventToStep),
     ])
     dispatchStateChanged()
-    speak(result.message)
+    if (ttsEnabled) void speakTurkish(result.message)
   }
 
-  const sendCommand = async (text = input) => {
-    const trimmed = text.trim()
+  const sendCommand = async (text?: string) => {
+    const commandText = typeof text === "string" ? text : input
+    const trimmed = commandText.trim()
     if (!trimmed || busy) return
     setBusy(true)
     setSteps([
@@ -378,7 +395,13 @@ export function VoiceCommandCenter() {
       setInput("")
     } catch (error) {
       const message = error instanceof Error ? error.message : "Bilinmeyen hata"
+      const assistantMessage: BankAgentResult["transcript"][number] = {
+        role: "assistant",
+        text: message,
+        at: new Date().toISOString(),
+      }
       setLastAssistantMessage(message)
+      setMessages((current) => [...current, assistantMessage].slice(-10))
       setSteps((current) => [
         ...current.filter((step) => step.status !== "running"),
         { id: "error", label: "Hata", detail: message, status: "error" },
@@ -415,7 +438,80 @@ export function VoiceCommandCenter() {
     }
   }
 
-  const startListening = () => {
+  const fillPrompt = (prompt: string) => {
+    setInput(prompt)
+    setActiveTab("text")
+  }
+
+  const transcribeAudio = async (blob: Blob) => {
+    setTranscribing(true)
+    setSteps([
+      { id: "whisper-upload", label: "Whisper Fast", detail: "Ses yerel faster-whisper modeline gönderiliyor.", status: "running" },
+    ])
+    try {
+      const formData = new FormData()
+      formData.append("audio", blob, "voice-command.webm")
+      const response = await fetch("/api/voice/transcribe", {
+        method: "POST",
+        body: formData,
+      })
+      const payload = (await response.json()) as TranscriptionResponse
+      if (!response.ok || !payload.text?.trim()) {
+        throw new Error(payload.error ?? "Ses metne çevrilemedi.")
+      }
+
+      const transcript = payload.text.trim()
+      setInput(transcript)
+      setActiveTab("text")
+      setLastAssistantMessage("Transkript hazır. Kontrol edip Gönder'e basabilirsiniz.")
+      setSteps([
+        {
+          id: "whisper-ready",
+          label: "Transkript hazır",
+          detail: transcript,
+          status: "success",
+        },
+      ])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Whisper transkripsiyon hatası"
+      setLastAssistantMessage(message)
+      setSteps([{ id: "whisper-error", label: "Whisper hatası", detail: message, status: "error" }])
+    } finally {
+      setTranscribing(false)
+    }
+  }
+
+  const startLocalRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || !("MediaRecorder" in window)) return false
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm"
+    const recorder = new MediaRecorder(stream, { mimeType })
+    audioChunksRef.current = []
+    mediaStreamRef.current = stream
+    mediaRecorderRef.current = recorder
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) audioChunksRef.current.push(event.data)
+    }
+    recorder.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop())
+      mediaStreamRef.current = null
+      mediaRecorderRef.current = null
+      const audio = new Blob(audioChunksRef.current, { type: mimeType })
+      audioChunksRef.current = []
+      if (audio.size > 0) void transcribeAudio(audio)
+    }
+
+    recorder.start()
+    setListening(true)
+    setSteps([{ id: "recording", label: "Kayıt alınıyor", detail: "Bitirince metne çevrilecek; otomatik gönderilmeyecek.", status: "running" }])
+    return true
+  }
+
+  const startBrowserRecognition = () => {
     setActiveTab("voice")
     if (!speechAvailable || listening) return
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition
@@ -427,7 +523,11 @@ export function VoiceCommandCenter() {
     recognition.onresult = (event) => {
       const transcript = event.results[0]?.[0]?.transcript ?? ""
       setInput(transcript)
-      if (transcript) sendCommand(transcript)
+      setActiveTab("text")
+      if (transcript) {
+        setLastAssistantMessage("Tarayıcı transkripti hazır. Kontrol edip Gönder'e basabilirsiniz.")
+        setSteps([{ id: "browser-transcript", label: "Transkript hazır", detail: transcript, status: "success" }])
+      }
     }
     recognition.onend = () => setListening(false)
     recognition.onerror = () => {
@@ -443,7 +543,30 @@ export function VoiceCommandCenter() {
     recognition.start()
   }
 
+  const startListening = async () => {
+    setActiveTab("voice")
+    if (listening || transcribing) return
+    try {
+      const localStarted = await startLocalRecording()
+      if (localStarted) return
+    } catch (error) {
+      setSteps([
+        {
+          id: "recorder-error",
+          label: "Mikrofon açılamadı",
+          detail: error instanceof Error ? error.message : "Tarayıcı konuşma tanımaya geçiliyor.",
+          status: "error",
+        },
+      ])
+    }
+    startBrowserRecognition()
+  }
+
   const stopListening = () => {
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop()
+    }
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop())
     recognitionRef.current?.stop()
     setListening(false)
   }
@@ -456,22 +579,7 @@ export function VoiceCommandCenter() {
       return
     }
 
-    if (speechAvailable) {
-      startListening()
-      return
-    }
-
-    setListening(true)
-    setLastAssistantMessage("Pipecat realtime hazır. Yazılı komut aynı Hermes banking agent ile çalışır.")
-    setSteps([
-      {
-        id: "pipecat-fallback",
-        label: "Dinliyorum",
-        detail: "Pipecat realtime paneli hazır; tarayıcı konuşma tanıma izni bekleniyor.",
-        status: "running",
-      },
-    ])
-    window.setTimeout(() => setListening(false), 1400)
+    void startListening()
   }
 
   return (
@@ -492,6 +600,17 @@ export function VoiceCommandCenter() {
             <div className="flex flex-wrap gap-1.5">
               <StatusBadge label="Pipecat" value={status?.pipecat === "configured" ? "realtime" : "fallback"} />
               <StatusBadge label="Hermes" value={status?.hermes === "connected" ? "aktif" : "banking toolset"} />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (ttsEnabled) stopTurkishSpeech()
+                  setTtsEnabled((current) => !current)
+                }}
+              >
+                {ttsEnabled ? <Volume2Icon className="size-4" /> : <VolumeXIcon className="size-4" />}
+                TTS
+              </Button>
             </div>
           </div>
 
@@ -516,16 +635,54 @@ export function VoiceCommandCenter() {
                     <span className="absolute inset-0 rounded-full border border-primary/40 animate-ping" />
                   </>
                 )}
-                {busy ? <LoaderCircleIcon className="size-11 animate-spin" /> : <MicIcon className="size-12" />}
+                {busy || transcribing ? (
+                  <LoaderCircleIcon className="size-11 animate-spin" />
+                ) : listening ? (
+                  <SquareIcon className="size-10" />
+                ) : (
+                  <MicIcon className="size-12" />
+                )}
               </button>
-              <p className="mt-4 text-base font-semibold">{listening ? "Dinliyorum" : busy ? "Konuşuyor" : "Konuş"}</p>
+              <p className="mt-4 text-base font-semibold">
+                {transcribing ? "Metne çeviriyorum" : listening ? "Kaydı bitir" : busy ? "Düşünüyor" : "Konuş"}
+              </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {activeTab === "voice" ? "Sesli işlem" : "Yazılı işlem"}
+                {listening ? "Tekrar basınca Whisper transkripsiyonu başlar." : activeTab === "voice" ? "Yerel Whisper input" : "Yazılı işlem"}
               </p>
               <SwipeConfirmationCard pending={state?.pendingConfirmation} busy={busy} onConfirm={confirm} />
             </div>
 
             <div className="min-w-0">
+              <div className="mb-4 rounded-lg border bg-background">
+                <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+                  <p className="text-sm font-medium">Chat</p>
+                  <Badge variant={busy ? "outline" : "secondary"}>
+                    {busy ? "Yanıt bekleniyor" : "Hazır"}
+                  </Badge>
+                </div>
+                <div className="max-h-72 space-y-2 overflow-y-auto p-3">
+                  {messages.map((message, index) => (
+                    <div
+                      key={`${message.at}-${index}`}
+                      className={cn(
+                        "max-w-[88%] rounded-lg px-3 py-2 text-sm",
+                        message.role === "user"
+                          ? "ml-auto bg-primary text-primary-foreground"
+                          : "bg-muted text-foreground"
+                      )}
+                    >
+                      <p className="break-words">{message.text}</p>
+                    </div>
+                  ))}
+                  {busy ? (
+                    <div className="flex max-w-[88%] items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
+                      <LoaderCircleIcon className="size-4 animate-spin" />
+                      Yerel ajan çalışıyor
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
               <Tabs
                 value={activeTab}
                 onValueChange={(value) => setActiveTab(value as DirectActionTab)}
@@ -547,22 +704,22 @@ export function VoiceCommandCenter() {
                     <div className="rounded-lg border bg-background p-3">
                       <p className="text-sm font-medium">Canlı komut</p>
                       <p className="mt-2 min-h-16 break-words text-lg text-muted-foreground">
-                        {input || "Oğluma 100 dolar yolla"}
+                        {input || "Mikrofona basın; metin burada görünecek."}
                       </p>
                     </div>
                     <Button
                       className="h-full min-h-24 px-6"
-                      disabled={busy}
+                      disabled={busy || transcribing}
                       onClick={handleVoiceButton}
                       variant={listening ? "destructive" : "default"}
                     >
-                      <MicIcon className="size-4" />
-                      {listening ? "Durdur" : "Başlat"}
+                      {listening ? <SquareIcon className="size-4" /> : <MicIcon className="size-4" />}
+                      {transcribing ? "Çevriliyor" : listening ? "Bitir" : "Kaydet"}
                     </Button>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {EXAMPLES.map((example) => (
-                      <Button key={example} variant="outline" size="sm" onClick={() => sendCommand(example)}>
+                      <Button key={example} variant="outline" size="sm" onClick={() => fillPrompt(example)}>
                         {example}
                       </Button>
                     ))}
@@ -589,7 +746,7 @@ export function VoiceCommandCenter() {
                         Gönder
                       </Button>
                       {EXAMPLES.map((example) => (
-                        <Button key={example} variant="ghost" size="sm" onClick={() => sendCommand(example)}>
+                        <Button key={example} variant="ghost" size="sm" onClick={() => fillPrompt(example)}>
                           {example}
                         </Button>
                       ))}
