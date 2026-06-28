@@ -472,6 +472,26 @@ function parseTradeQuantity(input: string, price: number) {
   return value
 }
 
+function isInvestmentRecommendationRequest(normalized: string) {
+  return /\b(oner\w*|tavsiye\w*|hangi\w*|hangisi\w*|secmeliyim|secsem|alayim)\b/.test(normalized) &&
+    /\b(hisse\w*|fon\w*|etf\w*|borsa\w*|yatirim\w*|portfoy\w*)\b/.test(normalized)
+}
+
+function marketWatchlistMessage(state: BankState) {
+  const watchlist = state.marketQuotes
+    .filter((quote) => quote.currency === "USD" && !quote.symbol.includes("-"))
+    .slice(0, 4)
+    .map((quote) => `${quote.symbol} (${quote.name}): ${formatMoney(quote.price, quote.currency)}, ${quote.changePercent.toFixed(2)}%`)
+    .join("; ")
+
+  return [
+    "Kişisel hisse önerisi veremem; demo için izleme listesi ve analiz çerçevesi sunabilirim.",
+    `Sandbox izleme listesinde görünenler: ${watchlist}.`,
+    "Karar verirken vade, risk toleransı, sektör yoğunlaşması ve portföy dağılımını birlikte kontrol edin.",
+    "Bu bir yatırım tavsiyesi değildir.",
+  ].join(" ")
+}
+
 function createConfirmation(payload: ConfirmationPayload, summary: string) {
   const id = `conf-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
   db()
@@ -500,8 +520,11 @@ function response(message: string, userText: string, events: AgentEvent[], state
 export async function runBankCommand(userText: string): Promise<BankAgentResult> {
   const normalized = normalizeText(userText)
   const pending = latestPending()
+  const explicitApproval =
+    /\b(evet|onay|onayliyorum|tamam|baslat)\b/.test(normalized) ||
+    /^(gonder|yolla)$/.test(normalized)
 
-  if (pending && /\b(evet|onay|onayliyorum|tamam|gonder|yolla|baslat)\b/.test(normalized)) {
+  if (pending && explicitApproval) {
     return confirmAction(pending.id, true, userText)
   }
 
@@ -607,7 +630,15 @@ export async function runBankCommand(userText: string): Promise<BankAgentResult>
     ], await readBankState())
   }
 
-  if (/\b(al|alım|alim|sat|satım|satim|buy|sell)\b/.test(normalized) && /\b(hisse|fon|kripto|bitcoin|ethereum|apple|tesla|aapl|tsla|btc|eth)\b/.test(normalized)) {
+  if (isInvestmentRecommendationRequest(normalized)) {
+    const state = await readBankState()
+    return response(marketWatchlistMessage(state), userText, [
+      { type: "bank.tool_progress", label: "Piyasa verisi çekildi", detail: state.marketQuotes[0]?.source === "live" ? "Canlı kaynak" : "Seed fallback" },
+      { type: "bank.tool_progress", label: "Tavsiye filtresi", detail: "Kişisel al/sat tavsiyesi yerine demo izleme listesi hazırlandı" },
+    ], state)
+  }
+
+  if (/\b(al|alım|alim|sat|satım|satim|buy|sell)\b/.test(normalized) && /\b(hisse\w*|fon\w*|kripto\w*|bitcoin|ethereum|apple|microsoft|nvidia|tesla|aapl|msft|nvda|tsla|btc|eth)\b/.test(normalized)) {
     const state = await readBankState()
     const quote = matchQuote(userText, state.marketQuotes) ?? matchQuote(userText)
     if (!quote) {
@@ -661,10 +692,10 @@ export async function runBankCommand(userText: string): Promise<BankAgentResult>
     )
   }
 
-  if (/\b(piyasa|borsa|hisse|fon|kripto|bitcoin|portfoy|portföy)\b/.test(normalized)) {
+  if (/\b(piyasa\w*|borsa\w*|hisse\w*|fon\w*|kripto\w*|bitcoin|portfoy\w*)\b/.test(normalized)) {
     const state = await readBankState()
     const quotes = state.marketQuotes.slice(0, 4).map((quote) => `${quote.symbol} ${formatMoney(quote.price, quote.currency)} (${quote.changePercent.toFixed(2)}%)`).join(", ")
-    return response(`Canlı piyasa ekranı hazır: ${quotes}.`, userText, [
+    return response(`Demo piyasa paneli hazır: ${quotes}.`, userText, [
       { type: "bank.tool_progress", label: "Piyasa verisi çekildi", detail: state.marketQuotes[0]?.source === "live" ? "Canlı kaynak" : "Seed fallback" },
     ], state)
   }

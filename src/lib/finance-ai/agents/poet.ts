@@ -8,7 +8,7 @@ export async function runPoetAgent(input: AgentInput): Promise<AgentReport> {
     const result = await callQwenAgentDetailed({
       role: "poet",
       messages: [
-        { role: "system", content: getSystemPrompt("poet") },
+        { role: "system", content: getSystemPrompt("poet") + "\n\nYou MUST think out loud step-by-step. Your response must begin with <think> and end with </think> before you write the final Turkish response." },
         {
           role: "user",
           content: JSON.stringify({
@@ -20,8 +20,10 @@ export async function runPoetAgent(input: AgentInput): Promise<AgentReport> {
             task: "Write the final Turkish user-facing answer. Keep it short, calm, and TTS-friendly.",
           }),
         },
+        { role: "assistant", content: "<think>\n" }
       ],
-      temperature: 0.2,
+      temperature: 0.3,
+      onChunk: input.onChunk,
     })
 
     return {

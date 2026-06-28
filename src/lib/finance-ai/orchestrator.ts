@@ -23,6 +23,7 @@ import type {
   FinanceIntent,
   FinanceOrchestrationTrace,
   FinalAnswerMode,
+  JudgeResult,
   OrchestratorPlan,
   RiskLevel,
   ToolCallTrace,
@@ -51,7 +52,43 @@ const AGENTS_BY_INTENT: Record<FinanceIntent, AgentRole[]> = {
 
 type PlanModelResult = Partial<OrchestratorPlan>
 
-export async function runLocalFinanceOrchestration(userText: string): Promise<BankAgentResult> {
+function pipelineEvent(label: string, detail: string): AgentEvent {
+  return { type: "bank.tool_progress", label, detail }
+}
+
+function roleLabel(role: AgentRole) {
+  return role
+    .replace("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toLocaleUpperCase("tr-TR"))
+}
+
+function compactText(value: string, maxLength = 150) {
+  const normalized = value.replace(/\s+/g, " ").trim()
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized
+}
+
+function toolPlanSummary(plan: OrchestratorPlan) {
+  return plan.toolPlan
+    .map((tool) => `${tool.name}${tool.requiresHumanApproval ? " (approval)" : ""}`)
+    .join(" -> ")
+}
+
+function bankToolRunnerDetail(gate: FinanceGateResult) {
+  if (gate.intent === "market_query") {
+    return "Sandbox piyasa verisi okunuyor; kişisel al/sat tavsiyesi filtresi kontrol ediliyor."
+  }
+
+  if (gate.intent === "balance_query") {
+    return "Sandbox hesap bakiyeleri okunuyor; para hareketi yapılmıyor."
+  }
+
+  return "Sandbox komutu parse ediliyor; kişi, hesap, bakiye ve onay gerekliliği kontrol ediliyor."
+}
+
+export async function runLocalFinanceOrchestration(
+  userText: string,
+  onProgress?: (event: any) => void
+): Promise<BankAgentResult> {
   const traceId = `trace-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
   const createdAt = new Date().toISOString()
   const gate = runFinanceGate(userText)
@@ -84,18 +121,41 @@ export async function runLocalFinanceOrchestration(userText: string): Promise<Ba
     }
     await recordAuditTrace(trace)
     return makeResult(finalMessage, userText, initialState, trace, [
-      { type: "bank.tool_progress", label: "Finance Domain Gate", detail: gate.reason },
-      { type: "bank.tool_progress", label: "Judge", detail: "Out-of-scope request safely rejected." },
+      pipelineEvent("API Route", "POST /api/bank/command isteği local finance orchestrator'a alındı."),
+      pipelineEvent("Finance Domain Gate", gate.reason),
+      pipelineEvent("Orchestrator", "İstek finans alanı dışında olduğu için safe_rejection planı üretildi."),
+      pipelineEvent("Judge", "Out-of-scope request safely rejected."),
+      pipelineEvent("Audit Log", `${trace.traceId} trace kaydı data/finance-ai-audit.jsonl içine yazıldı.`),
     ])
   }
+
+  // Deterministic fast-path disabled to force real LLM pipeline & CoT
 
   const plan = await createOrchestratorPlan(userText, gate, context, traceId)
   const toolCalls = toToolCallTrace(plan.toolPlan, "planned")
   markReadToolsCalled(toolCalls)
+  const pipelineEvents: AgentEvent[] = [
+    pipelineEvent("API Route", "POST /api/bank/command isteği local finance orchestrator'a alındı."),
+    pipelineEvent("Finance Domain Gate", `Intent=${gate.intent}, risk=${gate.riskLevel}. ${gate.reason}`),
+    pipelineEvent("Context Builder", `${Object.keys(context).length} context section hazırlandı.`),
+    pipelineEvent(
+      "Orchestrator",
+      `Plan=${plan.finalAnswerMode}; agents=${plan.selectedAgents.join(", ") || "none"}; task=${plan.taskId}.`
+    ),
+    pipelineEvent("Tool Governor", toolPlanSummary(plan) || "Tool plan gerekmedi."),
+  ]
 
   const reports: AgentReport[] = []
   for (const role of plan.selectedAgents.filter((role) => role !== "compliance" && role !== "poet")) {
-    reports.push(await runSpecialistAgent(role, { userPrompt: userText, gate, context, plan, reports }))
+    pipelineEvents.push(pipelineEvent(`Sub-agent ${roleLabel(role)}`, "Görev alt modele gönderildi; rapor bekleniyor."))
+    const report = await runSpecialistAgent(role, { userPrompt: userText, gate, context, plan, reports })
+    reports.push(report)
+    pipelineEvents.push(
+      pipelineEvent(
+        `Sub-agent ${roleLabel(role)}`,
+        `Rapor döndü. confidence=${Math.round(report.confidence * 100)}%; summary=${compactText(report.summary)}`
+      )
+    )
   }
 
   const bankToolResult = shouldUseBankCommand(gate)
@@ -109,19 +169,34 @@ export async function runLocalFinanceOrchestration(userText: string): Promise<Ba
   const state = bankToolResult?.state ?? initialState
   const nextContext = bankToolResult ? buildFinanceContext(state, gate) : context
   const draft = buildDraftAnswer(userText, gate, nextContext, reports, bankToolResult)
+  pipelineEvents.push(pipelineEvent("Draft Composer", compactText(draft)))
 
   if (plan.selectedAgents.includes("compliance")) {
-    reports.push(await runSpecialistAgent("compliance", { userPrompt: userText, gate, context: nextContext, plan, reports, draft }))
+    pipelineEvents.push(pipelineEvent("Sub-agent Compliance", "Draft uygunluk kontrolüne gönderildi."))
+    const complianceReport = await runSpecialistAgent("compliance", { userPrompt: userText, gate, context: nextContext, plan, reports, draft })
+    reports.push(complianceReport)
+    pipelineEvents.push(
+      pipelineEvent(
+        "Sub-agent Compliance",
+        `Uygunluk raporu döndü. confidence=${Math.round(complianceReport.confidence * 100)}%; summary=${compactText(complianceReport.summary)}`
+      )
+    )
   }
 
   let finalMessage = draft
   if (plan.selectedAgents.includes("poet")) {
-    const poetReport = await runSpecialistAgent("poet", { userPrompt: userText, gate, context: nextContext, plan, reports, draft })
+    pipelineEvents.push(pipelineEvent("Response Agent", "Draft, kullanıcıya uygun Türkçe final cevaba dönüştürülüyor."))
+    const poetReport = await runSpecialistAgent("poet", { 
+      userPrompt: userText, gate, context: nextContext, plan, reports, draft,
+      onChunk: (chunk, isThinking) => onProgress?.({ type: "chunk", chunk, isThinking })
+    })
     reports.push(poetReport)
     finalMessage = poetReport.summary
+    pipelineEvents.push(pipelineEvent("Response Agent", compactText(finalMessage)))
   }
 
   finalMessage = enforceFinalSafety(finalMessage, gate, plan, bankToolResult)
+  pipelineEvents.push(pipelineEvent("Final Safety", "Onay, yatırım tavsiyesi ve yüksek risk ifadeleri deterministik olarak kontrol edildi."))
   const judge = await runJudge({
     userPrompt: userText,
     gate,
@@ -135,6 +210,14 @@ export async function runLocalFinanceOrchestration(userText: string): Promise<Ba
   if (!judge.approved || judge.nextStep === "block") {
     finalMessage = safeCorrection(gate, judge.issues)
   }
+  pipelineEvents.push(
+    pipelineEvent(
+      "Judge",
+      judge.approved
+        ? `Approved. score=${Math.round(judge.score * 100)}%; next=${judge.nextStep}.`
+        : `Blocked. score=${Math.round(judge.score * 100)}%; issues=${judge.issues.join("; ")}`
+    )
+  )
 
   finalMessage = cleanUserFacingFallbackPrefix(finalMessage)
 
@@ -153,18 +236,91 @@ export async function runLocalFinanceOrchestration(userText: string): Promise<Ba
     createdAt,
   }
   await recordAuditTrace(trace)
+  pipelineEvents.push(pipelineEvent("Audit Log", `${trace.traceId} trace kaydı data/finance-ai-audit.jsonl içine yazıldı.`))
+  pipelineEvents.push(pipelineEvent("Final Response", compactText(finalMessage)))
 
   return makeResult(finalMessage, userText, state, trace, [
-    { type: "bank.tool_progress", label: "Finance Domain Gate", detail: gate.reason },
-    { type: "bank.tool_progress", label: "Context Builder", detail: `${Object.keys(nextContext).length} context section(s)` },
-    { type: "bank.tool_progress", label: "Orchestrator", detail: `${plan.selectedAgents.join(", ")} selected` },
+    ...pipelineEvents,
     ...(bankToolResult?.events ?? []),
-    { type: "bank.tool_progress", label: "Judge", detail: judge.approved ? "Approved" : judge.issues.join("; ") },
-    ...(plan.requiresHumanApproval && !bankToolResult?.events.some((event) => event.type === "bank.confirmation_required")
+    ...(plan.requiresHumanApproval && bankToolResult?.state.pendingConfirmation && !bankToolResult.events.some((event) => event.type === "bank.confirmation_required")
       ? [{ type: "bank.confirmation_required" as const, label: "Onay gerekiyor", detail: "Yüksek riskli finans işlemi" }]
       : []),
     ...(usedFallback(plan, reports)
       ? [{ type: "bank.tool_progress" as const, label: "local fallback", detail: "Local model call failed or timed out; deterministic sandbox logic answered safely." }]
+      : []),
+  ])
+}
+
+async function runDeterministicBankToolPath(
+  userText: string,
+  traceId: string,
+  createdAt: string,
+  gate: FinanceGateResult,
+  context: FinanceContext
+): Promise<BankAgentResult> {
+  const plan = fallbackPlan(traceId, gate, false)
+  const toolCalls = toToolCallTrace(plan.toolPlan, "planned")
+  markReadToolsCalled(toolCalls)
+  const pipelineEvents: AgentEvent[] = [
+    pipelineEvent("API Route", "POST /api/bank/command isteği local finance orchestrator'a alındı."),
+    pipelineEvent("Finance Domain Gate", `Intent=${gate.intent}, risk=${gate.riskLevel}. ${gate.reason}`),
+    pipelineEvent("Context Builder", `${Object.keys(context).length} context section hazırlandı.`),
+    pipelineEvent(
+      "Orchestrator",
+      `Plan=${plan.finalAnswerMode}; agents=${plan.selectedAgents.join(", ") || "none"}; task=${plan.taskId}.`
+    ),
+    pipelineEvent("Tool Governor", toolPlanSummary(plan)),
+    pipelineEvent(
+      "Sub-agent Policy",
+      "Para/kart/trade mutasyonları için alt modeller aksiyon çalıştırmaz; orchestrator isteği onaylı deterministic bank tool'a devreder."
+    ),
+    pipelineEvent("Bank Tool Runner", bankToolRunnerDetail(gate)),
+  ]
+
+  const bankToolResult = await runBankCommand(userText)
+  toolCalls.push(...toolCallsFromBankResult(bankToolResult, context, gate))
+  pipelineEvents.push(pipelineEvent("Bank Tool Runner", compactText(bankToolResult.message)))
+
+  let finalMessage = enforceFinalSafety(bankToolResult.message, gate, plan, bankToolResult)
+  const judge = deterministicJudge(gate, plan, bankToolResult, finalMessage, context)
+  if (!judge.approved || judge.nextStep === "block") {
+    finalMessage = safeCorrection(gate, judge.issues)
+  }
+  pipelineEvents.push(
+    pipelineEvent(
+      "Judge",
+      judge.approved
+        ? `Approved. score=${Math.round(judge.score * 100)}%; next=${judge.nextStep}.`
+        : `Blocked. score=${Math.round(judge.score * 100)}%; issues=${judge.issues.join("; ")}`
+    )
+  )
+  finalMessage = cleanUserFacingFallbackPrefix(finalMessage)
+
+  const nextContext = buildFinanceContext(bankToolResult.state, gate)
+  pipelineEvents.push(pipelineEvent("Context Refresh", `${Object.keys(nextContext).length} context section tool sonucu ile güncellendi.`))
+  const trace: FinanceOrchestrationTrace = {
+    traceId,
+    taskId: plan.taskId,
+    userPrompt: userText,
+    gate,
+    selectedAgents: plan.selectedAgents,
+    toolCalls,
+    agentReports: [],
+    judge,
+    requiresHumanApproval: plan.requiresHumanApproval,
+    finalMessage,
+    fallbackUsed: false,
+    createdAt,
+  }
+  await recordAuditTrace(trace)
+  pipelineEvents.push(pipelineEvent("Audit Log", `${trace.traceId} trace kaydı data/finance-ai-audit.jsonl içine yazıldı.`))
+  pipelineEvents.push(pipelineEvent("Final Response", compactText(finalMessage)))
+
+  return makeResult(finalMessage, userText, bankToolResult.state, trace, [
+    ...pipelineEvents,
+    ...bankToolResult.events,
+    ...(plan.requiresHumanApproval && bankToolResult.state.pendingConfirmation && !bankToolResult.events.some((event) => event.type === "bank.confirmation_required")
+      ? [{ type: "bank.confirmation_required" as const, label: "Onay gerekiyor", detail: "Yüksek riskli finans işlemi" }]
       : []),
   ])
 }
@@ -279,6 +435,47 @@ function shouldUseBankCommand(gate: FinanceGateResult) {
     gate.intent === "card_management" ||
     gate.intent === "market_query"
   )
+}
+
+function deterministicJudge(
+  gate: FinanceGateResult,
+  plan: OrchestratorPlan,
+  bankToolResult: BankAgentResult,
+  finalDraft: string,
+  context: FinanceContext
+): JudgeResult {
+  const issues: string[] = []
+  const highRisk = gate.riskLevel === "high" || gate.riskLevel === "critical"
+  const completed = bankToolResult.events.some((event) => event.type === "bank.state_changed")
+  const confirmationRequired = bankToolResult.events.some((event) => event.type === "bank.confirmation_required")
+  const hadPendingApproval = Boolean(context.pendingConfirmation)
+  const finalLooksExecuted = /\b(gönderildi|gonderildi|tamamlandı|tamamlandi|güncellendi|guncellendi|emri tamamlandı|emri tamamlandi)\b/i.test(finalDraft)
+
+  if (highRisk && !plan.requiresHumanApproval) {
+    issues.push("High-risk request did not require human approval.")
+  }
+
+  if (highRisk && finalLooksExecuted && completed && !hadPendingApproval) {
+    issues.push("High-risk action appears executed without an existing pending confirmation.")
+  }
+
+  if (highRisk && !completed && confirmationRequired && !finalDraft.toLocaleLowerCase("tr-TR").includes("onay")) {
+    issues.push("Approval requirement is not clear in the final answer.")
+  }
+
+  const approved = issues.length === 0
+  return {
+    approved,
+    score: approved ? 0.9 : 0.35,
+    failedComponent: approved ? undefined : "deterministic_judge",
+    issues,
+    requiredFix: approved ? undefined : "Yanıtı güvenli hale getir ve onay gerekliliğini açık söyle.",
+    nextStep: approved
+      ? highRisk && plan.requiresHumanApproval
+        ? "human_review"
+        : "finalize"
+      : "block",
+  }
 }
 
 function toToolCallTrace(toolPlan: ToolRequest[], status: ToolCallTrace["status"]): ToolCallTrace[] {
@@ -423,9 +620,10 @@ function enforceFinalSafety(
   const normalized = message.toLocaleLowerCase("tr-TR")
   const completed = bankToolResult?.events.some((event) => event.type === "bank.state_changed") ?? false
   const pending = Boolean(bankToolResult?.state.pendingConfirmation)
+  const confirmationRequired = bankToolResult?.events.some((event) => event.type === "bank.confirmation_required") ?? false
   const parts = [message.trim()]
 
-  if (plan.requiresHumanApproval && !completed && !normalized.includes("onay")) {
+  if (plan.requiresHumanApproval && (pending || confirmationRequired) && !completed && !normalized.includes("onay")) {
     parts.push("Bu işlem insan onayı olmadan tamamlanmaz.")
   }
 

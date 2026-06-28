@@ -3,7 +3,6 @@ import { Geist, Geist_Mono } from "next/font/google"
 import { ThemeProvider } from "next-themes"
 
 import { TooltipProvider } from "@/components/ui/tooltip"
-import "@pipecat-ai/voice-ui-kit/styles"
 import "./globals.css"
 
 const geistSans = Geist({

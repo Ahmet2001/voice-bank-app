@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangleIcon,
+  BrainCircuitIcon,
   CheckCircle2Icon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   CircleIcon,
   LoaderCircleIcon,
   MicIcon,
-  RadioIcon,
   SendIcon,
   ShieldCheckIcon,
   SparklesIcon,
@@ -16,17 +18,9 @@ import {
   VolumeXIcon,
   XIcon,
 } from "lucide-react"
-import {
-  ConnectButton,
-  ControlBar,
-  PipecatAppBase,
-  TranscriptOverlay,
-  UserAudioControl,
-  VoiceVisualizer,
-  type PipecatBaseChildProps,
-} from "@pipecat-ai/voice-ui-kit"
 import { motion, useMotionValue, useTransform, type PanInfo } from "motion/react"
 
+import { AiTrustPanel } from "@/components/finance-ai/ai-trust-panel"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -60,7 +54,6 @@ type AgentStatus = {
   commandRuntime: string
   commandLabel: string
   hermes: "connected" | "service-fallback" | "service-offline" | "fallback"
-  pipecat: "configured" | "browser-fallback"
 }
 
 type StepStatus = "idle" | "running" | "success" | "error" | "confirm"
@@ -87,6 +80,27 @@ const EXAMPLES = [
   "Bakiyelerimi göster",
   "Kartımı dondur",
   "Borsa ve kripto durumum ne?",
+]
+
+const DEMO_APPROVALS = [
+  {
+    kind: "Transfer",
+    title: "Anneme 500 TL gönder",
+    amount: "500,00 TRY",
+    command: "Anneme 500 TL gönder",
+  },
+  {
+    kind: "Kart",
+    title: "Ana kartı dondur",
+    amount: "Güvenlik işlemi",
+    command: "Kartımı dondur",
+  },
+  {
+    kind: "Trade",
+    title: "1000 dolarlık Apple al",
+    amount: "1.000,00 USD",
+    command: "1000 dolarlık Apple al",
+  },
 ]
 
 function dispatchStateChanged() {
@@ -124,83 +138,30 @@ function StatusBadge({ label, value }: { label: string; value: string }) {
   )
 }
 
-function RealtimeVoiceBlock() {
-  return (
-    <PipecatAppBase
-      noThemeProvider
-      transportType="smallwebrtc"
-      startBotParams={{
-        endpoint: "/api/voice/start",
-        requestData: {
-          transport: "webrtc",
-          locale: "tr-TR",
-        },
-      }}
-      transportOptions={{ waitForICEGathering: true }}
-    >
-      {({ client, handleConnect, handleDisconnect, error }: PipecatBaseChildProps) => (
-        <div className="flex h-full min-h-44 flex-col justify-between gap-3 rounded-lg border bg-background p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <RadioIcon className="size-4 text-primary" />
-              <span className="truncate text-sm font-medium">Pipecat realtime</span>
-            </div>
-            <Badge variant={error ? "destructive" : "secondary"}>
-              {error ? "Fallback" : client ? "Hazır" : "Yükleniyor"}
-            </Badge>
-          </div>
-
-          {client ? (
-            <div className="relative flex min-h-24 items-center justify-center overflow-hidden rounded-lg bg-muted/40 text-primary">
-              <VoiceVisualizer
-                participantType="bot"
-                barColor="currentColor"
-                barCount={7}
-                barGap={6}
-                barWidth={10}
-                barMaxHeight={70}
-              />
-              <TranscriptOverlay participant="remote" className="absolute inset-x-3 bottom-3" />
-            </div>
-          ) : (
-            <div className="flex min-h-24 items-center justify-center rounded-lg bg-muted/40 text-sm text-muted-foreground">
-              Ses oturumu hazırlanıyor
-            </div>
-          )}
-
-          {client ? (
-            <ControlBar>
-              <UserAudioControl />
-              <ConnectButton
-                onConnect={handleConnect}
-                onDisconnect={handleDisconnect}
-                stateContent={{
-                  initialized: { children: "Bağlan", variant: "active" },
-                  disconnected: { children: "Bağlan", variant: "active" },
-                  connecting: { children: "Bağlanıyor", variant: "secondary" },
-                  ready: { children: "Kapat", variant: "destructive" },
-                  disconnecting: { children: "Kapanıyor", variant: "secondary" },
-                  error: { children: "Hata", variant: "destructive" },
-                }}
-              />
-            </ControlBar>
-          ) : null}
-
-          {error ? <p className="text-xs text-muted-foreground">{error}</p> : null}
-        </div>
-      )}
-    </PipecatAppBase>
-  )
+function pendingPipelineSteps(command: string): OperationStep[] {
+  return [
+    { id: "received", label: "Komut alındı", detail: command, status: "success" },
+    { id: "api-route", label: "API Route", detail: "POST /api/bank/command -> local finance orchestrator", status: "running" },
+    { id: "domain-gate", label: "Finance Domain Gate", detail: "Intent ve risk sınıflandırması hazırlanıyor.", status: "running" },
+    { id: "context-builder", label: "Context Builder", detail: "Sandbox hesap, kart, kişi ve pending onay context'i okunuyor.", status: "idle" },
+    { id: "orchestrator", label: "Orchestrator", detail: "Agent seçimi, tool planı ve onay politikası üretilecek.", status: "idle" },
+    { id: "tool-governor", label: "Tool Governor", detail: "Araç izinleri ve human approval gereksinimi kontrol edilecek.", status: "idle" },
+    { id: "sub-agents", label: "Sub-agent Dispatch", detail: "Gerekirse specialist agent raporları alınacak.", status: "idle" },
+    { id: "judge", label: "Judge", detail: "Final yanıt güvenlik ve tutarlılık kontrolünden geçecek.", status: "idle" },
+    { id: "audit", label: "Audit Log", detail: "Trace JSONL olarak kalıcı loga yazılacak.", status: "idle" },
+  ]
 }
 
 function SwipeConfirmationCard({
   pending,
   busy,
   onConfirm,
+  onRunDemo,
 }: {
   pending?: PendingConfirmation
   busy: boolean
   onConfirm: (approved: boolean) => void
+  onRunDemo: (command: string) => void
 }) {
   const x = useMotionValue(0)
   const rotate = useTransform(x, [-180, 0, 180], [-8, 0, 8])
@@ -222,11 +183,35 @@ function SwipeConfirmationCard({
 
   if (!pending) {
     return (
-      <div className="mt-4 w-full rounded-lg border border-dashed bg-background p-4 text-left">
-        <p className="text-sm font-medium">Onay kartı</p>
+      <div className="mt-4 w-full rounded-lg border bg-background p-4 text-left">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-medium">Demo onay kartları</p>
+          <Badge variant="outline">Hazır</Badge>
+        </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          Transfer, kart veya trade isteği gelince burada büyük bir kart açılır.
+          Bir senaryo seçin; sistem gerçek bir sandbox onayı hazırlasın.
         </p>
+        <div className="mt-4 grid gap-2">
+          {DEMO_APPROVALS.map((item) => (
+            <button
+              key={item.command}
+              type="button"
+              disabled={busy}
+              onClick={() => onRunDemo(item.command)}
+              className="rounded-lg border bg-muted/30 p-3 text-left transition-colors hover:border-primary/40 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <Badge variant="secondary">{item.kind}</Badge>
+                  <p className="mt-2 text-sm font-medium">{item.title}</p>
+                </div>
+                <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground">
+                  {item.amount}
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
         <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
           <div className="rounded-md bg-muted px-3 py-2">Sola kaydır: reddet</div>
           <div className="rounded-md bg-muted px-3 py-2 text-right">Sağa kaydır: onayla</div>
@@ -303,9 +288,12 @@ export function VoiceCommandCenter() {
   const [input, setInput] = useState("")
   const [activeTab, setActiveTab] = useState<DirectActionTab>("voice")
   const [busy, setBusy] = useState(false)
+  const [showReasoningAudit, setShowReasoningAudit] = useState(true)
   const [listening, setListening] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const [ttsEnabled, setTtsEnabled] = useState(true)
+  const [liveThoughts, setLiveThoughts] = useState("")
+  const [liveAnswer, setLiveAnswer] = useState("")
   const [status, setStatus] = useState<AgentStatus | null>(null)
   const [state, setState] = useState<BankState | null>(null)
   const [lastAssistantMessage, setLastAssistantMessage] = useState(
@@ -322,7 +310,7 @@ export function VoiceCommandCenter() {
     {
       id: "ready",
       label: "Hazır",
-      detail: "Pipecat ses katmanı ve banking toolset beklemede.",
+      detail: "Yerel Whisper girişi ve banking toolset beklemede.",
       status: "idle",
     },
   ])
@@ -350,10 +338,9 @@ export function VoiceCommandCenter() {
       .then((payload) => setStatus(payload as AgentStatus))
       .catch(() => {
         setStatus({
-          commandRuntime: "local-sandbox",
-          commandLabel: "Yerel sandbox agent",
+          commandRuntime: "local-orchestrator",
+          commandLabel: "Yerel finance orchestrator",
           hermes: "fallback",
-          pipecat: "browser-fallback",
         })
       })
   }, [])
@@ -363,8 +350,28 @@ export function VoiceCommandCenter() {
     setLastAssistantMessage(result.message)
     setMessages((current) => [...current, ...result.transcript].slice(-10))
     setSteps([
-      { id: "received", label: "Komut alındı", detail: result.transcript[0]?.text, status: "success" },
-      { id: "hermes", label: "Hermes banking toolset", detail: status?.commandLabel ?? "Yerel sandbox agent", status: "success" },
+      {
+        id: "received",
+        label: "Komut alındı",
+        detail: result.transcript[0]?.text,
+        status: "success",
+      },
+      {
+        id: "runtime",
+        label: "Runtime",
+        detail: status?.commandLabel ?? "Yerel finance orchestrator",
+        status: "success",
+      },
+      ...(result.orchestration?.traceId
+        ? [
+            {
+              id: "trace-id",
+              label: "Trace ID",
+              detail: result.orchestration.traceId,
+              status: "success" as const,
+            },
+          ]
+        : []),
       ...result.events.map(eventToStep),
     ])
     dispatchStateChanged()
@@ -376,10 +383,7 @@ export function VoiceCommandCenter() {
     const trimmed = commandText.trim()
     if (!trimmed || busy) return
     setBusy(true)
-    setSteps([
-      { id: "received", label: "Komut alındı", detail: trimmed, status: "success" },
-      { id: "search", label: "Arıyorum", detail: "Search: Hermes banking toolset uygun hesap, kişi ve işlem niyetini tarıyor.", status: "running" },
-    ])
+    setSteps(pendingPipelineSteps(trimmed))
     try {
       const response = await fetch("/api/bank/command", {
         method: "POST",
@@ -391,7 +395,45 @@ export function VoiceCommandCenter() {
         throw new Error("Agent komutu tamamlanamadı.")
       }
 
-      applyResult((await response.json()) as BankAgentResult)
+      setLiveThoughts("")
+      setLiveAnswer("")
+
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error("Tarayıcı stream desteklemiyor.")
+      const decoder = new TextDecoder("utf-8")
+      let finalResult: BankAgentResult | null = null
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        const chunk = decoder.decode(value, { stream: true })
+        const lines = chunk.split("\n")
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (data.type === "chunk") {
+                if (data.isThinking) {
+                  setLiveThoughts((prev) => prev + data.chunk)
+                } else {
+                  setLiveAnswer((prev) => prev + data.chunk)
+                }
+              } else if (data.type === "result") {
+                finalResult = data.payload as BankAgentResult
+              }
+            } catch (e) {
+              // Ignore incomplete JSON chunks
+            }
+          }
+        }
+      }
+
+      setLiveThoughts("")
+      setLiveAnswer("")
+      if (finalResult) {
+        applyResult(finalResult)
+      }
       setInput("")
     } catch (error) {
       const message = error instanceof Error ? error.message : "Bilinmeyen hata"
@@ -598,7 +640,6 @@ export function VoiceCommandCenter() {
               <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{lastAssistantMessage}</p>
             </div>
             <div className="flex flex-wrap gap-1.5">
-              <StatusBadge label="Pipecat" value={status?.pipecat === "configured" ? "realtime" : "fallback"} />
               <StatusBadge label="Hermes" value={status?.hermes === "connected" ? "aktif" : "banking toolset"} />
               <Button
                 variant="outline"
@@ -614,7 +655,7 @@ export function VoiceCommandCenter() {
             </div>
           </div>
 
-          <div className="mt-4 grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)_300px]">
+          <div className="mt-4 grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
             <div className="flex min-h-64 flex-col items-center rounded-lg border bg-muted/30 p-4 text-center">
               <button
                 type="button"
@@ -649,7 +690,12 @@ export function VoiceCommandCenter() {
               <p className="mt-1 text-xs text-muted-foreground">
                 {listening ? "Tekrar basınca Whisper transkripsiyonu başlar." : activeTab === "voice" ? "Yerel Whisper input" : "Yazılı işlem"}
               </p>
-              <SwipeConfirmationCard pending={state?.pendingConfirmation} busy={busy} onConfirm={confirm} />
+              <SwipeConfirmationCard
+                pending={state?.pendingConfirmation}
+                busy={busy}
+                onConfirm={confirm}
+                onRunDemo={(command) => sendCommand(command)}
+              />
             </div>
 
             <div className="min-w-0">
@@ -675,12 +721,88 @@ export function VoiceCommandCenter() {
                     </div>
                   ))}
                   {busy ? (
-                    <div className="flex max-w-[88%] items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
-                      <LoaderCircleIcon className="size-4 animate-spin" />
-                      Yerel ajan çalışıyor
+                    <div className="flex max-w-[88%] flex-col gap-2 rounded-lg bg-muted px-3 py-2 text-sm text-foreground">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <LoaderCircleIcon className="size-4 animate-spin" />
+                        Yerel ajan çalışıyor
+                      </div>
+                      {liveThoughts && (
+                        <details open className="mt-1 rounded-md border border-primary/20 bg-background/50 p-2 text-xs text-muted-foreground">
+                          <summary className="cursor-pointer font-medium text-primary">🤔 Düşünce Süreci</summary>
+                          <div className="mt-2 whitespace-pre-wrap">{liveThoughts}</div>
+                        </details>
+                      )}
+                      {liveAnswer && (
+                        <div className="mt-1 whitespace-pre-wrap">{liveAnswer}</div>
+                      )}
                     </div>
                   ) : null}
                 </div>
+              </div>
+
+              <div className="mb-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium">Pipeline log</p>
+                  <Badge variant="outline">{steps.length} event</Badge>
+                </div>
+
+                <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border bg-background p-2">
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {steps.map((step, index) => (
+                      <div
+                        key={`${step.id}-${index}`}
+                        className={cn(
+                          "flex min-w-0 items-start gap-2 rounded-lg border p-2",
+                          step.status === "error" && "border-destructive/40 bg-destructive/5",
+                          step.status === "running" && "border-primary/30 bg-primary/5",
+                          step.status === "confirm" && "border-amber-500/40 bg-amber-500/10"
+                        )}
+                      >
+                        <StepIcon status={step.status} />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] tabular-nums text-muted-foreground">
+                              {String(index + 1).padStart(2, "0")}
+                            </span>
+                            <p className="truncate text-sm font-medium">{step.label}</p>
+                          </div>
+                          {step.detail ? <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">{step.detail}</p> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mb-4 overflow-hidden rounded-lg border bg-background">
+                <button
+                  type="button"
+                  onClick={() => setShowReasoningAudit((current) => !current)}
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <BrainCircuitIcon className="size-4 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">Reasoning audit</p>
+                      <p className="text-xs text-muted-foreground">
+                        Ham chain-of-thought yerine güvenli orchestration özeti
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{showReasoningAudit ? "Açık" : "Kapalı"}</Badge>
+                    {showReasoningAudit ? (
+                      <ChevronUpIcon className="size-4 text-muted-foreground" />
+                    ) : (
+                      <ChevronDownIcon className="size-4 text-muted-foreground" />
+                    )}
+                  </div>
+                </button>
+                {showReasoningAudit ? (
+                  <div className="border-t">
+                    <AiTrustPanel />
+                  </div>
+                ) : null}
               </div>
 
               <Tabs
@@ -755,33 +877,8 @@ export function VoiceCommandCenter() {
                 </TabsContent>
               </Tabs>
 
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-medium">İşlem akışı</p>
-                <Badge variant="outline">Search log</Badge>
-              </div>
-
-              <div className="mt-2 grid gap-2 md:grid-cols-2">
-                {steps.slice(-6).map((step) => (
-                  <div
-                    key={step.id}
-                    className={cn(
-                      "flex min-w-0 items-start gap-2 rounded-lg border p-2",
-                      step.status === "error" && "border-destructive/40 bg-destructive/5"
-                    )}
-                  >
-                    <StepIcon status={step.status} />
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{step.label}</p>
-                      {step.detail ? <p className="line-clamp-2 text-xs text-muted-foreground">{step.detail}</p> : null}
-                    </div>
-                  </div>
-                ))}
-              </div>
             </div>
 
-            <div className="grid gap-3">
-              <RealtimeVoiceBlock />
-            </div>
           </div>
         </div>
       </div>

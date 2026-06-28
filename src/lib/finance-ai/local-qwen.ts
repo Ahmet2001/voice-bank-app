@@ -33,6 +33,7 @@ type CallQwenParams = {
   messages: LocalMessage[]
   temperature?: number
   json?: boolean
+  onChunk?: (chunk: string, isThinking: boolean) => void
 }
 
 export async function callQwenAgent(params: CallQwenParams): Promise<string> {
@@ -40,8 +41,8 @@ export async function callQwenAgent(params: CallQwenParams): Promise<string> {
 }
 
 export async function callQwenAgentDetailed(params: CallQwenParams): Promise<LocalQwenResult> {
-  const baseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434"
-  const model = process.env.OLLAMA_MODEL ?? "qwen3:4b"
+  const baseUrl = process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434"
+  const model = process.env.OLLAMA_MODEL ?? "qwen2.5:1.5b"
 
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/chat`, {
@@ -50,19 +51,67 @@ export async function callQwenAgentDetailed(params: CallQwenParams): Promise<Loc
       body: JSON.stringify({
         model,
         messages: params.messages,
-        stream: false,
+        stream: !!params.onChunk,
         options: {
           temperature: params.temperature ?? 0.2,
         },
         format: params.json ? "json" : undefined,
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(90000), // Increased timeout to 90s for long prompts
       cache: "no-store",
     })
 
     if (!response.ok) {
       const detail = await response.text().catch(() => "")
       throw new Error(`${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`)
+    }
+
+    if (params.onChunk) {
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error("Stream body not available")
+      const decoder = new TextDecoder("utf-8")
+      let fullResponse = params.messages.find(m => m.role === "assistant")?.content || ""
+      let isThinking = fullResponse.includes("<think>")
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const chunkStr = decoder.decode(value, { stream: true })
+        const lines = chunkStr.split("\n")
+        
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const parsed = JSON.parse(line) as OllamaChatResponse
+            if (parsed.message?.content) {
+              const contentChunk = parsed.message.content
+              fullResponse += contentChunk
+              if (fullResponse.includes("<think>") && !fullResponse.includes("</think>")) {
+                isThinking = true
+              } else if (fullResponse.includes("</think>")) {
+                isThinking = false
+              }
+              params.onChunk(contentChunk, isThinking)
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        }
+      }
+
+      const thinkingEnd = fullResponse.indexOf("</think>")
+      let thinkingText = undefined
+      let finalContent = fullResponse
+      
+      if (fullResponse.includes("<think>") && thinkingEnd !== -1) {
+          thinkingText = fullResponse.substring(fullResponse.indexOf("<think>") + 7, thinkingEnd).trim()
+          finalContent = fullResponse.substring(thinkingEnd + 9).trim()
+      }
+
+      return {
+        content: finalContent,
+        thinking: thinkingText,
+      }
     }
 
     const payload = (await response.json()) as OllamaChatResponse

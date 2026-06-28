@@ -170,6 +170,7 @@ export type AgentInput = {
   plan?: OrchestratorPlan
   reports?: AgentReport[]
   draft?: string
+  onChunk?: (chunk: string, isThinking: boolean) => void
 }
 
 export type FinanceOrchestrationTrace = {

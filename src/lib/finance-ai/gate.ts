@@ -36,6 +36,10 @@ const FINANCE_TERMS = [
   "ethereum",
   "apple",
   "aapl",
+  "microsoft",
+  "msft",
+  "nvidia",
+  "nvda",
   "tesla",
   "tsla",
   "spy",
@@ -48,6 +52,9 @@ const FINANCE_TERMS = [
   "islem",
   "harcama",
 ]
+
+const MARKET_TERM_PATTERN = /\b(piyasa\w*|borsa\w*|hisse\w*|fon\w*|etf\w*|kripto\w*|bitcoin|ethereum|apple|aapl|microsoft|msft|nvidia|nvda|tesla|tsla|spy|yatirim\w*)\b/
+const RECOMMENDATION_PATTERN = /\b(oner\w*|tavsiye\w*|hangisi\w*|hangi\w*|secmeliyim|secsem)\b/
 
 function hasAny(value: string, terms: string[]) {
   return terms.some((term) => value.includes(term))
@@ -71,6 +78,7 @@ function classifyRisk(normalized: string, intent: FinanceIntent): RiskLevel {
   }
 
   if (intent === "portfolio_analysis") return "medium"
+  if (intent === "market_query" && RECOMMENDATION_PATTERN.test(normalized)) return "medium"
   if (intent === "market_query" && /\b(al|alim|sat|satim|buy|sell)\b/.test(normalized)) return "high"
   return "low"
 }
@@ -97,14 +105,16 @@ export function runFinanceGate(userPrompt: string): FinanceGateResult {
     intent = "card_management"
   } else if (/\b(gonder|yolla|transfer|havale|eft|ode|odeme|al|alim|sat|satim|buy|sell)\b/.test(normalized)) {
     intent = "transaction_request"
-  } else if (/\b(bakiye|hesap|para durum|ne kadar param|bakiyem)\b/.test(normalized)) {
+  } else if (/\b(bakiye\w*|hesap\w*|para durum\w*|ne kadar param|bakiyem)\b/.test(normalized)) {
     intent = "balance_query"
   } else if (/\b(portfoy|portfolio|dagilim|cesitlendirme|riskli mi)\b/.test(normalized)) {
     intent = "portfolio_analysis"
-  } else if (/\b(piyasa|borsa|hisse|fon|etf|kripto|bitcoin|ethereum|apple|aapl|tesla|tsla|spy)\b/.test(normalized)) {
+  } else if (MARKET_TERM_PATTERN.test(normalized)) {
     intent = /\b(nedir|ne demek|anlat|ogren|acikla)\b/.test(normalized)
       ? "financial_education"
       : "market_query"
+  } else if (RECOMMENDATION_PATTERN.test(normalized) && /\b(yatirim\w*|portfoy\w*)\b/.test(normalized)) {
+    intent = "market_query"
   } else if (/\b(nedir|ne demek|anlat|ogren|acikla|faiz|enflasyon|kredi|borc|sigorta|emeklilik)\b/.test(normalized)) {
     intent = "financial_education"
   }

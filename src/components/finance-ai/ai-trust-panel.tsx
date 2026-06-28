@@ -58,8 +58,8 @@ export function AiTrustPanel() {
     <section className="space-y-3 px-4 pb-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold">AI Trust Panel</h2>
-          <p className="text-xs text-muted-foreground">Ollama yerel model: qwen3:4b. Thinking güvenli özet olarak gösterilir.</p>
+          <h2 className="text-base font-semibold">Reasoning Audit</h2>
+          <p className="text-xs text-muted-foreground">Ollama yerel model: qwen3:4b. Ham chain-of-thought gösterilmez; güvenli thinking özeti gösterilir.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-1.5">

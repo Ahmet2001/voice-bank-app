@@ -5,15 +5,13 @@ export const dynamic = "force-dynamic"
 
 export async function GET() {
   const agentServiceUrl = process.env.AGENT_SERVICE_URL
-  const pipecatStartUrl = process.env.PIPECAT_BOT_START_URL
   const groqConfigured = Boolean(process.env.GROQ_API_KEY)
 
   if (!agentServiceUrl) {
     return NextResponse.json({
-      commandRuntime: groqConfigured ? "groq-sandbox" : "local-sandbox",
-      commandLabel: groqConfigured ? "Groq + banking toolset" : "Yerel sandbox agent",
+      commandRuntime: "local-orchestrator",
+      commandLabel: groqConfigured ? "Yerel finance orchestrator + Groq fallback" : "Yerel finance orchestrator",
       hermes: groqConfigured ? "connected" : "fallback",
-      pipecat: pipecatStartUrl ? "configured" : "browser-fallback",
     })
   }
 
@@ -25,17 +23,15 @@ export async function GET() {
     const health = (await response.json().catch(() => ({}))) as { hermes?: boolean }
 
     return NextResponse.json({
-      commandRuntime: "agent-service",
-      commandLabel: "Agent service",
+      commandRuntime: "local-orchestrator",
+      commandLabel: "Yerel finance orchestrator",
       hermes: health.hermes ? "connected" : "service-fallback",
-      pipecat: pipecatStartUrl ? "configured" : "browser-fallback",
     })
   } catch {
     return NextResponse.json({
-      commandRuntime: "local-sandbox",
-      commandLabel: "Yerel sandbox agent",
+      commandRuntime: "local-orchestrator",
+      commandLabel: "Yerel finance orchestrator",
       hermes: "service-offline",
-      pipecat: pipecatStartUrl ? "configured" : "browser-fallback",
     })
   }
 }

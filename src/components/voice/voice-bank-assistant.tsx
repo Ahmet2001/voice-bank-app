@@ -5,21 +5,11 @@ import {
   CheckIcon,
   LoaderCircleIcon,
   MicIcon,
-  RadioIcon,
   SendIcon,
   ShieldCheckIcon,
   SparklesIcon,
   XIcon,
 } from "lucide-react"
-import {
-  ConnectButton,
-  ControlBar,
-  PipecatAppBase,
-  TranscriptOverlay,
-  UserAudioControl,
-  VoiceVisualizer,
-  type PipecatBaseChildProps,
-} from "@pipecat-ai/voice-ui-kit"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -64,64 +54,6 @@ const EXAMPLE_COMMANDS = [
 
 function dispatchStateChanged() {
   window.dispatchEvent(new CustomEvent("voice-bank-state-changed"))
-}
-
-function RealtimePanel() {
-  return (
-    <div className="rounded-lg border bg-muted/30 p-3">
-      <PipecatAppBase
-        noThemeProvider
-        transportType="smallwebrtc"
-        startBotParams={{
-          endpoint: "/api/voice/start",
-          requestData: {
-            transport: "webrtc",
-            locale: "tr-TR",
-          },
-        }}
-        transportOptions={{ waitForICEGathering: true }}
-      >
-        {({ client, handleConnect, handleDisconnect, error }: PipecatBaseChildProps) => (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <RadioIcon className="size-4 text-muted-foreground" />
-                <span className="truncate text-sm font-medium">Pipecat realtime</span>
-              </div>
-              <Badge variant={error ? "destructive" : client ? "outline" : "secondary"}>
-                {error ? "Kapalı" : client ? "Hazır" : "Yükleniyor"}
-              </Badge>
-            </div>
-            {client ? (
-              <>
-                <div className="relative flex min-h-24 items-center justify-center overflow-hidden rounded-lg border bg-background">
-                  <VoiceVisualizer
-                    participantType="bot"
-                    barColor="currentColor"
-                    barCount={7}
-                    barGap={6}
-                    barWidth={10}
-                    barMaxHeight={70}
-                    className="text-primary"
-                  />
-                  <TranscriptOverlay participant="remote" className="absolute inset-x-3 bottom-3" />
-                </div>
-                <ControlBar>
-                  <UserAudioControl />
-                  <ConnectButton onConnect={handleConnect} onDisconnect={handleDisconnect} />
-                </ControlBar>
-              </>
-            ) : (
-              <div className="flex min-h-24 items-center justify-center rounded-lg border bg-background text-sm text-muted-foreground">
-                Realtime istemci hazirlaniyor
-              </div>
-            )}
-            {error ? <p className="text-xs text-muted-foreground">{error}</p> : null}
-          </div>
-        )}
-      </PipecatAppBase>
-    </div>
-  )
 }
 
 function ConfirmationBox({
@@ -289,8 +221,6 @@ export function VoiceBankAssistant() {
           </SheetHeader>
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-            <RealtimePanel />
-
             <ConfirmationBox pending={state?.pendingConfirmation} busy={busy} onConfirm={confirm} />
 
             <div className="space-y-2">
